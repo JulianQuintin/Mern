@@ -1,0 +1,33 @@
+
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: mern
+      MYSQL_USER: root
+      MYSQL_PASSWORD: root1
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d
+
+  app:
+    build: .
+    container_name: app
+    ports:
+      - "3000:80"
+      - "5000:5000"
+    depends_on:
+      - mysql
+    environment:
+      - DB_HOST=mysql
+      - DB_USER=root
+      - DB_PASSWORD=root1
+      - DB_NAME=mern
+
+volumes:
+  mysql-data:

@@ -1,0 +1,85 @@
+pipeline {
+    agent any
+    
+    environment {
+        DOCKER_HUB_CREDENTIALS = credentials('docker-hub-credentials')
+        KUBECONFIG = credentials('kubeconfig')
+        DOCKER_IMAGE = 'tuusuario/tu-imagen-crud'
+        DOCKER_TAG = "${env.BUILD_NUMBER}"
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/JulianQuintin/Mern.git'
+            }
+        }
+        
+        stage('Build Backend') {
+            steps {
+                sh 'mvn clean package' // o el comando adecuado para tu backend
+            }
+        }
+        
+        stage('Build Frontend') {
+            steps {
+                dir('frontend') {
+                    sh 'npm install'
+                    sh 'npm run build'
+                }
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    docker.build("${env.DOCKER_IMAGE}:${env.DOCKER_TAG}")
+                }
+            }
+        }
+        
+        stage('Push Docker Image') {
+            steps {
+                script {
+                    docker.withRegistry('https://registry.hub.docker.com', 'docker-hub-credentials') {
+                        docker.image("${env.DOCKER_IMAGE}:${env.DOCKER_TAG}").push()
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy to Kubernetes') {
+            steps {
+                script {
+                    // Aplicar los manifiestos de Kubernetes
+                    sh "kubectl apply -f k8s/deployment.yaml"
+                    sh "kubectl apply -f k8s/service.yaml"
+                    
+                    // Actualizar la imagen en el deployment
+                    sh "kubectl set image deployment/crud-deployment crud-app=${env.DOCKER_IMAGE}:${env.DOCKER_TAG}"
+                }
+            }
+        }
+        
+        stage('Smoke Test') {
+            steps {
+                script {
+                    // Verificar que el servicio está funcionando
+                    def response = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://tu-servicio:puerto", returnStdout: true).trim()
+                    if (response != "200") {
+                        error("Smoke test failed with status code: ${response}")
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            slackSend(color: 'good', message: "Build ${env.BUILD_NUMBER} succeeded!")
+        }
+        failure {
+            slackSend(color: 'danger', message: "Build ${env.BUILD_NUMBER} failed!")
+        }
+    }
+}
