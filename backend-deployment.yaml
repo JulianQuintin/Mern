@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: Crud-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: Crud-backend
+  template:
+    metadata:
+      labels:
+        app: Crud-backend
+    spec:
+      containers:
+      - name: backend
+        image: crud-backend
+        ports:
+        - containerPort: 5000
+      env:
+      - name: MONGO_URI
+        value: "mongodb://mongo:27017/Crud"
+
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: crud-backend
+spec:
+  type: NodePort
+  selector:
+    app: Crud-backend
+  ports:
+  - port: 5000
+    targetPort: 5000
