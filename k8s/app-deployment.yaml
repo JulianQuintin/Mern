@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mern-crud-app
+  namespace: mern-crud-ns
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mern-crud-app
+  template:
+    metadata:
+      labels:
+        app: mern-crud-app
+    spec:
+      containers:
+      - name: mern-crud-app
+        image: julianquintin/mern-mysql-crud-master
+        ports:
+        - containerPort: 5000
+        envFrom:
+        - configMapRef:
+            name: app-config
+        - secretRef:
+            name: db-secrets
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 5000
+          initialDelaySeconds: 15
+          periodSeconds: 10

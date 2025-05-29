@@ -1,48 +1,49 @@
 pipeline {
     agent any
-    
     environment {
-        DOCKER_HUB_CREDENTIALS = credentials('docker-hub-credentials')
-        KUBECONFIG = credentials('kubeconfig')
-        DOCKER_IMAGE = 'tuusuario/tu-imagen-crud'
+        // Configuración de Docker
+        DOCKER_IMAGE = 'julianquintin/mern-mysql-crud-master'
         DOCKER_TAG = "${env.BUILD_NUMBER}"
+        
+        // Configuración de Kubernetes
+        K8S_NAMESPACE = 'mern-crud-ns'
+        APP_NAME = 'mern-crud-app'
+        
+        // Credenciales (configurar en Jenkins)
+        DOCKERHUB_CREDS = credentials('dockerhub-creds')
+        KUBECONFIG_FILE = credentials('kubeconfig')
     }
     
     stages {
-        stage('Checkout') {
+        stage('Checkout Code') {
             steps {
-                git branch: 'main', url: 'https://github.com/JulianQuintin/Mern.git'
-            }
-        }
-        
-        stage('Build Backend') {
-            steps {
-                sh 'mvn clean package' // o el comando adecuado para tu backend
-            }
-        }
-        
-        stage('Build Frontend') {
-            steps {
-                dir('frontend') {
-                    sh 'npm install'
-                    sh 'npm run build'
-                }
+                git branch: 'main', 
+                url: 'https://github.com/JulianQuintin/Mern.git'
+                clean: true
             }
         }
         
         stage('Build Docker Image') {
             steps {
                 script {
-                    docker.build("${env.DOCKER_IMAGE}:${env.DOCKER_TAG}")
+                    // Construir la imagen usando el Dockerfile en la raíz
+                    docker.build("${DOCKER_IMAGE}:${DOCKER_TAG}")
                 }
             }
         }
         
-        stage('Push Docker Image') {
+        stage('Run Tests') {
+            steps {
+                sh 'docker-compose -f docker-compose.test.yml up --build --abort-on-container-exit'
+            }
+        }
+        
+        stage('Push to Docker Hub') {
             steps {
                 script {
-                    docker.withRegistry('https://registry.hub.docker.com', 'docker-hub-credentials') {
-                        docker.image("${env.DOCKER_IMAGE}:${env.DOCKER_TAG}").push()
+                    docker.withRegistry('https://registry.hub.docker.com', DOCKERHUB_CREDS) {
+                        docker.image("${DOCKER_IMAGE}:${DOCKER_TAG}").push()
+                        docker.image("${DOCKER_IMAGE}:${DOCKER_TAG}").push('latest')
                     }
                 }
             }
@@ -51,12 +52,24 @@ pipeline {
         stage('Deploy to Kubernetes') {
             steps {
                 script {
-                    // Aplicar los manifiestos de Kubernetes
-                    sh "kubectl apply -f k8s/deployment.yaml"
-                    sh "kubectl apply -f k8s/service.yaml"
-                    
-                    // Actualizar la imagen en el deployment
-                    sh "kubectl set image deployment/crud-deployment crud-app=${env.DOCKER_IMAGE}:${env.DOCKER_TAG}"
+                    // Configurar kubectl
+                    withEnv(["KUBECONFIG=${KUBECONFIG_FILE}"]) {
+                        // Aplicar los manifiestos de Kubernetes
+                        sh """
+                            kubectl apply -f k8s/namespace.yaml
+                            kubectl apply -f k8s/configmap.yaml
+                            kubectl apply -f k8s/secrets.yaml
+                            kubectl apply -f k8s/mysql-deployment.yaml
+                            kubectl apply -f k8s/app-deployment.yaml
+                            kubectl apply -f k8s/service.yaml
+                            
+                            # Actualizar la imagen del deployment
+                            kubectl set image deployment/${APP_NAME} ${APP_NAME}=${DOCKER_IMAGE}:${DOCKER_TAG} -n ${K8S_NAMESPACE}
+                            
+                            # Esperar a que el despliegue esté listo
+                            kubectl rollout status deployment/${APP_NAME} -n ${K8S_NAMESPACE}
+                        """
+                    }
                 }
             }
         }
@@ -64,11 +77,14 @@ pipeline {
         stage('Smoke Test') {
             steps {
                 script {
-                    // Verificar que el servicio está funcionando
-                    def response = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://tu-servicio:puerto", returnStdout: true).trim()
-                    if (response != "200") {
-                        error("Smoke test failed with status code: ${response}")
-                    }
+                    // Obtener la IP externa del servicio
+                    def SERVICE_IP = sh(
+                        script: "kubectl get svc ${APP_NAME}-service -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}'",
+                        returnStdout: true
+                    ).trim()
+                    
+                    // Prueba básica de conectividad
+                    sh "curl -sSf http://${SERVICE_IP}/api/health"
                 }
             }
         }
@@ -76,10 +92,14 @@ pipeline {
     
     post {
         success {
-            slackSend(color: 'good', message: "Build ${env.BUILD_NUMBER} succeeded!")
+            slackSend(color: 'good', message: "Deployment ${APP_NAME} v${DOCKER_TAG} succeeded!")
         }
         failure {
-            slackSend(color: 'danger', message: "Build ${env.BUILD_NUMBER} failed!")
+            slackSend(color: 'danger', message: "Deployment ${APP_NAME} v${DOCKER_TAG} failed!")
+        }
+        always {
+            // Limpieza
+            sh 'docker system prune -f'
         }
     }
 }

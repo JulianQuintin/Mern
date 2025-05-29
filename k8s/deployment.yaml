@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployment
+  namespace: mern
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: tu-app
+  template:
+    metadata:
+      labels:
+        app: tu-app
+    spec:
+      containers:
+      - name: tu-app
+        image: julianpinilla123/mern-mysql-crud-master:latest
+        ports:
+        - containerPort: 5000
+        envFrom:
+        - configMapRef:
+            name: tu-config
+        - secretRef:
+            name: tu-secrets
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 5000
+          initialDelaySeconds: 10
+          periodSeconds: 5
