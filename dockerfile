@@ -1,42 +1,42 @@
-# Etapa 1: Construir el frontend React
-FROM node:16-alpine as frontend-builder
+# Etapa 1: Construir el cliente (React)
+FROM node:16-alpine as client-builder
 
-WORKDIR /app/frontend
-COPY frontend/package.json frontend/package-lock.json ./
+WORKDIR /app/client
+COPY client/package.json client/package-lock.json ./
 RUN npm install
-COPY frontend .
+COPY client .
 RUN npm run build
 
-# Etapa 2: Construir el backend Node.js
-FROM node:16-alpine as backend-builder
+# Etapa 2: Construir el servidor (Node.js)
+FROM node:16-alpine as server-builder
 
-WORKDIR /app/backend
-COPY backend/package.json backend/package-lock.json ./
+WORKDIR /app
+COPY package.json package-lock.json ./
 RUN npm install
-COPY backend .
+COPY . .
 
 # Etapa 3: Imagen de producción final
 FROM node:16-alpine
 
 WORKDIR /app
 
-# Instalar dependencias para MySQL y Nginx
-RUN apk add --no-cache nginx mariadb-client
+# Instalar dependencias necesarias
+RUN apk add --no-cache nginx
 
 # Configurar Nginx
-COPY frontend/nginx.conf /etc/nginx/nginx.conf
+COPY nginx.conf /etc/nginx/nginx.conf
 
-# Copiar frontend construido
-COPY --from=frontend-builder /app/frontend/build /usr/share/nginx/html
+# Copiar cliente construido
+COPY --from=client-builder /app/client /usr/share/nginx/html
 
-# Copiar backend
-COPY --from=backend-builder /app/backend /app/backend
+# Copiar servidor
+COPY --from=server-builder /app /app
 
-# Instalar solo dependencias de producción para el backend
-WORKDIR /app/backend
+# Instalar solo dependencias de producción para el servidor
+WORKDIR /app/server
 RUN npm install --only=production
 
-# Variables de entorno
+# Variables de entorno (pueden ser sobrescritas en docker-compose)
 ENV NODE_ENV=production \
     PORT=5000 \
     DB_HOST=mysql \
@@ -45,7 +45,7 @@ ENV NODE_ENV=production \
     DB_PASSWORD=root1 \
     DB_NAME=mern
 
-# Exponer puertos
+# Exponer puertos (Nginx en 80, Node en 5000)
 EXPOSE 80 5000
 
 # Script de inicio
