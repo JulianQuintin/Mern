@@ -19,7 +19,8 @@ pipeline {
             steps {
                 git branch: 'main', 
                 url: 'https://github.com/JulianQuintin/Mern.git'
-                clean: true
+                extensions: [
+                    [$class: 'CleanBeforeCheckout']
             }
         }
         
