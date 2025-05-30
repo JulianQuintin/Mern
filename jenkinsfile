@@ -21,6 +21,8 @@ pipeline {
                 url: 'https://github.com/JulianQuintin/Mern.git'
                 extensions: [
                     [$class: 'CleanBeforeCheckout']
+                ]
+                }
             }
         }
         
