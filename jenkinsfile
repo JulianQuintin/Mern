@@ -1,5 +1,11 @@
 pipeline {
     agent any
+    
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+    
     environment {
         // Configuración de Docker
         DOCKER_IMAGE = 'julianquintin/mern-mysql-crud-master'
@@ -9,7 +15,7 @@ pipeline {
         K8S_NAMESPACE = 'mern-crud-ns'
         APP_NAME = 'mern-crud-app1'
         
-        // Credenciales (configurar en Jenkins)
+        // Credenciales (deben existir en Jenkins)
         DOCKERHUB_CREDS = credentials('dockerhub-creds')
         KUBECONFIG_FILE = credentials('kubeconfig')
     }
@@ -17,27 +23,38 @@ pipeline {
     stages {
         stage('Checkout Code') {
             steps {
-                git branch: 'main', 
-                url: 'https://github.com/JulianQuintin/Mern.git'
-                extensions: [
-                    [$class: 'CleanBeforeCheckout']
-                ]
-                
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: 'main']],
+                    extensions: [
+                        [$class: 'CleanBeforeCheckout'],
+                        [$class: 'CloneOption', depth: 1, shallow: true]
+                    ],
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/JulianQuintin/Mern.git',
+                        credentialsId: 'github-creds' // Asegúrate de tener esta credencial configurada
+                    ]]
+                ])
             }
         }
         
         stage('Build Docker Image') {
             steps {
                 script {
-                    // Construir la imagen usando el Dockerfile en la raíz
-                    docker.build("${DOCKER_IMAGE}:${DOCKER_TAG}")
+                    docker.build("${DOCKER_IMAGE}:${DOCKER_TAG}", "./docker") // Asumiendo que el Dockerfile está en ./docker
                 }
             }
         }
         
         stage('Run Tests') {
             steps {
-                sh 'docker-compose -f docker-compose.test.yml up --build --abort-on-container-exit'
+                script {
+                    try {
+                        sh 'docker-compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from test'
+                    } finally {
+                        sh 'docker-compose -f docker-compose.test.yml down -v'
+                    }
+                }
             }
         }
         
@@ -46,7 +63,10 @@ pipeline {
                 script {
                     docker.withRegistry('https://registry.hub.docker.com', DOCKERHUB_CREDS) {
                         docker.image("${DOCKER_IMAGE}:${DOCKER_TAG}").push()
-                        docker.image("${DOCKER_IMAGE}:${DOCKER_TAG}").push('latest')
+                        // Solo push 'latest' si es una rama estable (main/master)
+                        if (env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master') {
+                            docker.image("${DOCKER_IMAGE}:${DOCKER_TAG}").push('latest')
+                        }
                     }
                 }
             }
@@ -55,22 +75,30 @@ pipeline {
         stage('Deploy to Kubernetes') {
             steps {
                 script {
-                    // Configurar kubectl
                     withEnv(["KUBECONFIG=${KUBECONFIG_FILE}"]) {
-                        // Aplicar los manifiestos de Kubernetes
+                        // Aplicar configuración base
                         sh """
-                            kubectl apply -f k8s/namespace.yaml
+                            kubectl apply -f k8s/namespace.yaml || true
                             kubectl apply -f k8s/configmap.yaml
                             kubectl apply -f k8s/secrets.yaml
+                        """
+                        
+                        // Desplegar MySQL y esperar que esté listo
+                        sh """
                             kubectl apply -f k8s/mysql-deployment.yaml
+                            kubectl rollout status deployment/mysql -n ${K8S_NAMESPACE} --timeout=300s
+                        """
+                        
+                        // Desplegar la aplicación
+                        sh """
                             kubectl apply -f k8s/app-deployment.yaml
                             kubectl apply -f k8s/service.yaml
                             
-                            # Actualizar la imagen del deployment
+                            # Actualizar imagen
                             kubectl set image deployment/${APP_NAME} ${APP_NAME}=${DOCKER_IMAGE}:${DOCKER_TAG} -n ${K8S_NAMESPACE}
                             
-                            # Esperar a que el despliegue esté listo
-                            kubectl rollout status deployment/${APP_NAME} -n ${K8S_NAMESPACE}
+                            # Esperar despliegue
+                            kubectl rollout status deployment/${APP_NAME} -n ${K8S_NAMESPACE} --timeout=300s
                         """
                     }
                 }
@@ -80,29 +108,46 @@ pipeline {
         stage('Smoke Test') {
             steps {
                 script {
-                    // Obtener la IP externa del servicio
-                    def SERVICE_IP = sh(
-                        script: "kubectl get svc ${APP_NAME}-service -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}'",
-                        returnStdout: true
-                    ).trim()
-                    
-                    // Prueba básica de conectividad
-                    sh "curl -sSf http://${SERVICE_IP}/api/health"
+                    retry(3) {
+                        def SERVICE_IP = sh(
+                            script: "kubectl get svc ${APP_NAME}-service -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' --wait",
+                            returnStdout: true
+                        ).trim()
+                        
+                        if (!SERVICE_IP) {
+                            error("No se pudo obtener la IP del servicio")
+                        }
+                        
+                        sh "curl --retry 3 --retry-delay 5 --connect-timeout 10 -sSf http://${SERVICE_IP}/api/health"
+                    }
                 }
             }
         }
     }
     
     post {
-        success {
-            slackSend(color: 'good', message: "Deployment ${APP_NAME} v${DOCKER_TAG} succeeded!")
-        }
-        failure {
-            slackSend(color: 'danger', message: "Deployment ${APP_NAME} v${DOCKER_TAG} failed!")
-        }
         always {
-            // Limpieza
-            sh 'docker system prune -f'
+            script {
+                // Limpieza de contenedores de test
+                sh 'docker-compose -f docker-compose.test.yml down -v || true'
+                
+                // Limpieza general
+                sh 'docker system prune -f || true'
+                
+                // Notificación de Slack
+                def SLACK_CHANNEL = '#build-notifications'
+                def status = currentBuild.currentResult
+                def color = (status == 'SUCCESS') ? 'good' : 'danger'
+                
+                slackSend(
+                    channel: SLACK_CHANNEL,
+                    color: color,
+                    message: "Build ${status}: ${env.JOB_NAME} #${env.BUILD_NUMBER}\n" +
+                             "Docker Image: ${DOCKER_IMAGE}:${DOCKER_TAG}\n" +
+                             "K8s Namespace: ${K8S_NAMESPACE}\n" +
+                             "URL: ${env.BUILD_URL}"
+                )
+            }
         }
     }
 }
