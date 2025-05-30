@@ -7,7 +7,7 @@ pipeline {
         
         // Configuración de Kubernetes
         K8S_NAMESPACE = 'mern-crud-ns'
-        APP_NAME = 'mern-crud-app'
+        APP_NAME = 'mern-crud-app1'
         
         // Credenciales (configurar en Jenkins)
         DOCKERHUB_CREDS = credentials('dockerhub-creds')
