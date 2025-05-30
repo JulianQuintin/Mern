@@ -17,7 +17,7 @@ pipeline {
         
         // Credenciales (deben existir en Jenkins)
         DOCKERHUB_CREDS = credentials('dockerhub-creds')
-        KUBECONFIG_FILE = credentials('kubeconfig')
+        KUBECONFIG_FILE = credentials('minikube-config')
     }
     
     stages {
