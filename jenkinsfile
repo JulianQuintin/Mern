@@ -34,7 +34,7 @@ pipeline {
                     ],
                     userRemoteConfigs: [[
                         url: 'https://github.com/JulianQuintin/Mern.git',
-                        credentialsId: 'github-creds' // Asegúrate de tener esta credencial configurada
+                        credentialsId: 'GitHubtoken2' // Asegúrate de tener esta credencial configurada
                     ]]
                 ])
             }
