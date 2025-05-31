@@ -1,8 +1,6 @@
 pipeline {
     agent any
-    tools {
-        git 'Git'  // Nombre de la herramienta configurada en Global Tool Configuration
-    }
+    
     options {
         timeout(time: 30, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '10'))
