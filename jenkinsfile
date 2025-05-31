@@ -6,7 +6,7 @@ pipeline {
         KUBECTL_CMD = '/usr/local/bin/kubectl'  // Ruta absoluta de kubectl
         DOCKER_IMAGE = "julianquintin/mern-mysql-crud-master:${env.BUILD_NUMBER}"
         KUBECONFIG = "/Users/julianpinilla/Desktop/minikube-config"
-        NAMESPACE = "mern-namespace"
+        NAMESPACE = "mern-crud-ns"
     }
 
     stages {
