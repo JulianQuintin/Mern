@@ -2,9 +2,11 @@ pipeline {
     agent any
 
     environment {
-        IMAGE_NAME = 'mern'
-        // Ruta al kubeconfig del usuario SYSTEM (donde Jenkins normalmente se ejecuta en Windows)
-        KUBECONFIG = '/Users/julianpinilla/Desktop'
+        // Configura las rutas absolutas para Docker
+        DOCKER_CMD = '/usr/local/bin/docker'
+        DOCKER_COMPOSE_CMD = '/usr/local/bin/docker-compose'
+        DOCKER_IMAGE = 'mern'
+        DOCKER_TAG = "${env.BUILD_NUMBER}"
     }
 
     stages {
