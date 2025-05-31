@@ -1,71 +1,155 @@
 pipeline {
     agent any
-
+    tools {
+        git 'Git'  // Nombre de la herramienta configurada en Global Tool Configuration
+    }
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+    
     environment {
-        IMAGE_NAME = 'mern-crud-app'
-        // Ruta al kubeconfig del usuario SYSTEM (donde Jenkins normalmente se ejecuta en Windows)
-        KUBECONFIG = '/Users/julianpinilla/Desktop'
+        // Configuración de Docker
+        DOCKER_IMAGE = 'julianquintin/mern-mysql-crud-master'
+        DOCKER_TAG = "${env.BUILD_NUMBER}"
+        
+        // Configuración de Kubernetes
+        K8S_NAMESPACE = 'mern-crud-ns'
+        APP_NAME = 'mern-crud-app'
+        
+        // Credenciales (deben existir en Jenkins)
+        DOCKERHUB_CREDS = credentials('dockerhub-creds')
+        KUBECONFIG_FILE = credentials('minikube-config')
     }
-
+    
     stages {
-        stage('Clonar repositorio') {
+        stage('Checkout Code') {
             steps {
-                git branch: 'main', url: 'https://github.com/JulianQuintin/Mern.git'
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: 'main']],
+                    extensions: [
+                        [$class: 'CleanBeforeCheckout'],
+                        [$class: 'CloneOption', depth: 1, shallow: true]
+                    ],
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/JulianQuintin/Mern.git',
+                        credentialsId: 'GitHubtoken2' // Asegúrate de tener esta credencial configurada
+                    ]]
+                ])
             }
         }
-
-        stage('Verificar conexión con Kubernetes') {
+        
+        stage('Build Docker Image') {
             steps {
-                bat '''
-                echo Verificando conexión con Minikube...
-                kubectl config current-context
-                kubectl get nodes
-                '''
+                script {
+                    docker.build("${DOCKER_IMAGE}:${DOCKER_TAG}", "./docker") // Asumiendo que el Dockerfile está en ./docker
+                }
             }
         }
-
-        stage('Construir imagen Docker en Minikube') {
+        
+        stage('Run Tests') {
             steps {
-                bat '''
-                rem Configurar entorno Docker para usar Minikube
-                call minikube -p minikube docker-env --shell=cmd > minikube_env.bat
-                call minikube_env.bat
-
-                rem Construir imagen
-                docker build -t %IMAGE_NAME% .
-                '''
+                script {
+                    try {
+                        sh 'docker-compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from test'
+                    } finally {
+                        sh 'docker-compose -f docker-compose.test.yml down -v'
+                    }
+                }
             }
         }
-
-        stage('Eliminar recursos anteriores') {
+        
+        stage('Push to Docker Hub') {
             steps {
-                bat '''
-                echo Eliminando recursos antiguos (si existen)...
-                kubectl delete -f secret.yaml --ignore-not-found
-                kubectl delete -f deployment.yaml --ignore-not-found
-                kubectl delete -f service.yaml --ignore-not-found
-                '''
+                script {
+                    docker.withRegistry('https://registry.hub.docker.com', DOCKERHUB_CREDS) {
+                        docker.image("${DOCKER_IMAGE}:${DOCKER_TAG}").push()
+                        // Solo push 'latest' si es una rama estable (main/master)
+                        if (env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master') {
+                            docker.image("${DOCKER_IMAGE}:${DOCKER_TAG}").push('latest')
+                        }
+                    }
+                }
             }
         }
-
-        stage('Desplegar manifiestos') {
+        
+        stage('Deploy to Kubernetes') {
             steps {
-                bat '''
-                echo Aplicando manifiestos de Kubernetes...
-                kubectl apply -f secret.yaml --validate=false
-                kubectl apply -f deployment.yaml --validate=false
-                kubectl apply -f service.yaml --validate=false
-                '''
+                script {
+                    withEnv(["KUBECONFIG=${KUBECONFIG_FILE}"]) {
+                        // Aplicar configuración base
+                        sh """
+                            kubectl apply -f k8s/namespace.yaml || true
+                            kubectl apply -f k8s/configmap.yaml
+                            kubectl apply -f k8s/secrets.yaml
+                        """
+                        
+                        // Desplegar MySQL y esperar que esté listo
+                        sh """
+                            kubectl apply -f k8s/mysql-deployment.yaml
+                            kubectl rollout status deployment/mysql -n ${K8S_NAMESPACE} --timeout=300s
+                        """
+                        
+                        // Desplegar la aplicación
+                        sh """
+                            kubectl apply -f k8s/app-deployment.yaml
+                            kubectl apply -f k8s/service.yaml
+                            
+                            # Actualizar imagen
+                            kubectl set image deployment/${APP_NAME} ${APP_NAME}=${DOCKER_IMAGE}:${DOCKER_TAG} -n ${K8S_NAMESPACE}
+                            
+                            # Esperar despliegue
+                            kubectl rollout status deployment/${APP_NAME} -n ${K8S_NAMESPACE} --timeout=300s
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Smoke Test') {
+            steps {
+                script {
+                    retry(3) {
+                        def SERVICE_IP = sh(
+                            script: "kubectl get svc ${APP_NAME}-service -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' --wait",
+                            returnStdout: true
+                        ).trim()
+                        
+                        if (!SERVICE_IP) {
+                            error("No se pudo obtener la IP del servicio")
+                        }
+                        
+                        sh "curl --retry 3 --retry-delay 5 --connect-timeout 10 -sSf http://${SERVICE_IP}/api/health"
+                    }
+                }
             }
         }
     }
-
+    
     post {
-        failure {
-            echo '❌ Falló el pipeline. Revisa los logs de Jenkins para detalles.'
-        }
-        success {
-            echo '✅ Pipeline completado exitosamente. Imagen desplegada en Minikube.'
+        always {
+            script {
+                // Limpieza de contenedores de test
+                sh 'docker-compose -f docker-compose.test.yml down -v || true'
+                
+                // Limpieza general
+                sh 'docker system prune -f || true'
+                
+                // Notificación de Slack
+                def SLACK_CHANNEL = '#build-notifications'
+                def status = currentBuild.currentResult
+                def color = (status == 'SUCCESS') ? 'good' : 'danger'
+                
+                slackSend(
+                    channel: SLACK_CHANNEL,
+                    color: color,
+                    message: "Build ${status}: ${env.JOB_NAME} #${env.BUILD_NUMBER}\n" +
+                             "Docker Image: ${DOCKER_IMAGE}:${DOCKER_TAG}\n" +
+                             "K8s Namespace: ${K8S_NAMESPACE}\n" +
+                             "URL: ${env.BUILD_URL}"
+                )
+            }
         }
     }
 }
