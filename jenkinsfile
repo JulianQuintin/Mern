@@ -57,10 +57,10 @@ pipeline {
                         kubectl apply -f k8s/service.yaml -n ${env.NAMESPACE}
                         
                         # Update image
-                        kubectl set image deployment/mern-app mern-app=${env.DOCKER_IMAGE} -n ${env.NAMESPACE}
+                        kubectl set image deployment/mern-crud-app mern-crud-app=${env.DOCKER_IMAGE} -n ${env.NAMESPACE}
                         
                         # Verify rollout
-                        kubectl rollout status deployment/mern-app -n ${env.NAMESPACE} --timeout=300s
+                        kubectl rollout status deployment/mern-crud-app -n ${env.NAMESPACE} --timeout=300s
                     """
                 }
             }
