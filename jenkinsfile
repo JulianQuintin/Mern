@@ -5,41 +5,37 @@ pipeline {
         DOCKER_CMD = '/usr/local/bin/docker'
         KUBECTL_CMD = '/usr/local/bin/kubectl'
         DOCKER_IMAGE = "julianquintin/mern-mysql-crud-master:${env.BUILD_NUMBER}"
-        KUBECONFIG = "/Users/julianpinilla/Desktop/minikube-config"
-        NAMESPACE = "mern-crud-ns"
-        // Variable para el entorno Docker de Minikube
-        MINIKUBE_DOCKER_ENV = "${WORKSPACE}/minikube-docker-env"
+        MINIKUBE_PROFILE = "mern-cluster"  // Nombre único para este cluster
     }
 
     stages {
-        stage('Checkout Code') {
+        stage('Start Minikube Cluster') {
             steps {
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: 'main']],
-                    userRemoteConfigs: [[
-                        url: 'https://github.com/JulianQuintin/Mern.git',
-                        credentialsId: 'GitHubtoken2'
-                    ]]
-                ])
+                script {
+                    sh """
+                        # Verificar si Minikube está instalado
+                        if ! command -v minikube &> /dev/null; then
+                            echo "Minikube no está instalado"
+                            exit 1
+                        fi
+
+                        # Iniciar Minikube si no está corriendo
+                        if ! minikube status -p ${MINIKUBE_PROFILE} &> /dev/null; then
+                            minikube start -p ${MINIKUBE_PROFILE} --driver=docker \
+                                --cpus=4 --memory=8192 --disk-size=20g
+                        fi
+
+                        # Configurar el entorno
+                        eval \$(minikube docker-env -p ${MINIKUBE_PROFILE})
+                        export KUBECONFIG=\$(minikube kubectl config view -p ${MINIKUBE_PROFILE} --flatten)
+                    """
+                }
             }
         }
 
-        stage('Configure Minikube Environment') {
+        stage('Checkout Code') {
             steps {
-                script {
-                    // Configurar el entorno Docker para Minikube
-                    sh """
-                        # Obtener variables de entorno de Docker de Minikube
-                        minikube docker-env > ${MINIKUBE_DOCKER_ENV}
-                        
-                        # Configurar el shell para usar Docker de Minikube
-                        eval \$(minikube docker-env)
-                        
-                        # Verificar que estamos usando el Docker correcto
-                        docker info | grep "Name: minikube"
-                    """
-                }
+                checkout([...]) // Mantén tu configuración actual de checkout
             }
         }
 
@@ -47,28 +43,8 @@ pipeline {
             steps {
                 script {
                     sh """
-                        # Construir la imagen usando el Docker de Minikube
+                        # Construir dentro del entorno Docker de Minikube
                         docker build -t ${env.DOCKER_IMAGE} -f dockerfile .
-                        
-                        # Verificar que la imagen se creó en Minikube
-                        docker images | grep ${env.DOCKER_IMAGE}
-                    """
-                }
-            }
-        }
-
-        stage('Prepare Kubernetes') {
-            steps {
-                script {
-                    sh """
-                        # Crear namespace si no existe
-                        ${env.KUBECTL_CMD} get ns ${env.NAMESPACE} || ${env.KUBECTL_CMD} create ns ${env.NAMESPACE}
-                        
-                        # Verificar acceso al cluster
-                        ${env.KUBECTL_CMD} cluster-info
-                        
-                        # Configurar política de pull para usar imágenes locales
-                        ${env.KUBECTL_CMD} patch deployment mern-crud-app -n ${env.NAMESPACE} -p '{"spec":{"template":{"spec":{"containers":[{"name":"mern-crud-app","imagePullPolicy":"Never"}]}}}}' || true
                     """
                 }
             }
@@ -78,20 +54,28 @@ pipeline {
             steps {
                 script {
                     sh """
-                        # Aplicar manifiestos Kubernetes
-                        ${env.KUBECTL_CMD} apply -f k8s/namespace.yaml
-                        ${env.KUBECTL_CMD} apply -f k8s/mysql-deployment.yaml -n ${env.NAMESPACE}
-                        ${env.KUBECTL_CMD} apply -f k8s/app-deployment.yaml -n ${env.NAMESPACE}
-                        ${env.KUBECTL_CMD} apply -f k8s/service.yaml -n ${env.NAMESPACE}
-                        
-                        # Actualizar imagen (usará la local gracias a Never)
-                        ${env.KUBECTL_CMD} set image deployment/mern-crud-app mern-crud-app=${env.DOCKER_IMAGE} -n ${env.NAMESPACE}
-                        
-                        # Verificar despliegue con manejo de errores mejorado
-                        timeout 300 bash -c "
-                            while ! ${env.KUBECTL_CMD} rollout status deployment/mern-crud-app -n ${env.NAMESPACE} --timeout=30s; do
-                                echo 'Rollout en progreso...';
-                                ${env.KUBECTL_CMD} get pods -n ${env.NAMESPACE};
+                        # Asegurar que el namespace existe
+                        kubectl create namespace mern-crud-ns --dry-run=client -o yaml | kubectl apply -f -
+
+                        # Aplicar los manifiestos con política de imagen local
+                        kubectl apply -f k8s/namespace.yaml
+                        kubectl apply -f k8s/mysql-deployment.yaml -n mern-crud-ns
+                        kubectl patch deployment mern-crud-app -n mern-crud-ns \
+                            -p '{"spec":{"template":{"spec":{"containers":[{"name":"mern-crud-app","imagePullPolicy":"Never"}]}}}}' || true
+                        kubectl apply -f k8s/app-deployment.yaml -n mern-crud-ns
+                        kubectl apply -f k8s/service.yaml -n mern-crud-ns
+
+                        # Actualizar imagen
+                        kubectl set image deployment/mern-crud-app mern-crud-app=${env.DOCKER_IMAGE} -n mern-crud-ns
+
+                        # Esperar despliegue con manejo de errores
+                        timeout 600 bash -c "
+                            while ! kubectl rollout status deployment/mern-crud-app -n mern-crud-ns --timeout=60s; do
+                                echo '=== Estado actual ===';
+                                kubectl get pods -n mern-crud-ns -o wide;
+                                echo '=== Logs de pods fallidos ===';
+                                kubectl logs -n mern-crud-ns -l app=mern-crud-app --all-containers=true --tail=50 || true;
+                                echo '=== Reintentando en 10 segundos ===';
                                 sleep 10;
                             done
                         "
@@ -104,21 +88,25 @@ pipeline {
     post {
         always {
             echo "Pipeline execution completed with status: ${currentBuild.currentResult}"
-            // Limpiar el entorno Docker de Minikube
-            sh """
-                eval \$(minikube docker-env -u)
-                docker system prune -f || true
-            """
+            sh "docker system prune -f || true"
         }
         failure {
-            // Comandos de diagnóstico cuando falla
-            sh """
-                echo '=== DESPLIEGUE FALLIDO - INFORMACIÓN PARA DIAGNÓSTICO ==='
-                ${env.KUBECTL_CMD} get pods -n ${env.NAMESPACE} -o wide
-                ${env.KUBECTL_CMD} describe deployment mern-crud-app -n ${env.NAMESPACE}
-                ${env.KUBECTL_CMD} logs -l app=mern-crud-app -n ${env.NAMESPACE} --all-containers=true --tail=50
-                ${env.KUBECTL_CMD} get events -n ${env.NAMESPACE} --sort-by=.metadata.creationTimestamp
-            """
+            script {
+                // Solo intentar diagnóstico si Minikube está activo
+                if (sh(script: "minikube status -p ${env.MINIKUBE_PROFILE} &> /dev/null", returnStatus: true) == 0) {
+                    sh """
+                        echo '=== INFORMACIÓN DE DIAGNÓSTICO ==='
+                        minikube status -p ${env.MINIKUBE_PROFILE}
+                        kubectl config current-context
+                        kubectl cluster-info
+                        kubectl get all -n mern-crud-ns
+                        kubectl describe deployment mern-crud-app -n mern-crud-ns
+                        kubectl get events -n mern-crud-ns --sort-by=.metadata.creationTimestamp
+                    """
+                } else {
+                    echo "Minikube no está disponible para diagnóstico"
+                }
+            }
         }
     }
 }
