@@ -2,15 +2,15 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_CMD = '/usr/local/bin/docker'  // Ruta absoluta a Docker
-        DOCKER_IMAGE = "julianquintin/mern-mysql-crud-master:local-${env.BUILD_NUMBER}"
-        DOCKERFILE_PATH = 'dockerfile'  // Ruta relativa a tu Dockerfile
+        DOCKER_CMD = '/usr/local/bin/docker'
+        DOCKER_IMAGE = "julianquintin/mern-mysql-crud-master:${env.BUILD_NUMBER}"
+        KUBECONFIG = "${env.HOME}/.kube/config"
+        NAMESPACE = "mern-namespace"
     }
 
     stages {
         stage('Checkout Code') {
             steps {
-                echo "Clonando repositorio..."
                 checkout([
                     $class: 'GitSCM',
                     branches: [[name: 'main']],
@@ -25,51 +25,52 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 script {
-                    echo "Construyendo imagen Docker..."
                     sh """
-                        ${env.DOCKER_CMD} build \
-                            -t ${env.DOCKER_IMAGE} \
-                            -f ${env.DOCKERFILE_PATH} .
+                        ${env.DOCKER_CMD} build -t ${env.DOCKER_IMAGE} -f dockerfile .
                     """
                 }
             }
         }
 
-        stage('Verify Image') {
+        stage('Prepare Kubernetes') {
             steps {
                 script {
-                    echo "Verificando imagen construida..."
-                    sh "${env.DOCKER_CMD} images | grep ${env.DOCKER_IMAGE.split(':')[0]}"
+                    sh """
+                        # Create namespace if doesn't exist
+                        kubectl get ns ${env.NAMESPACE} || kubectl create ns ${env.NAMESPACE}
+                        
+                        # Verify cluster access
+                        kubectl cluster-info
+                    """
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                script {
+                    sh """
+                        # Apply Kubernetes manifests
+                        kubectl apply -f k8s/namespace.yaml
+                        kubectl apply -f k8s/mysql-deployment.yaml -n ${env.NAMESPACE}
+                        kubectl apply -f k8s/app-deployment.yaml -n ${env.NAMESPACE}
+                        kubectl apply -f k8s/service.yaml -n ${env.NAMESPACE}
+                        
+                        # Update image
+                        kubectl set image deployment/mern-app mern-app=${env.DOCKER_IMAGE} -n ${env.NAMESPACE}
+                        
+                        # Verify rollout
+                        kubectl rollout status deployment/mern-app -n ${env.NAMESPACE} --timeout=300s
+                    """
                 }
             }
         }
     }
 
-    stage('Deploy to Kubernetes') {
-    steps {
-        script {
-            sh """
-                # Crea el namespace si no existe
-                kubectl get namespace ${env.NAMESPACE} || kubectl create namespace ${env.NAMESPACE}
-
-                # Aplica los archivos YAML
-                kubectl apply -f k8s/mysql-deployment.yaml -n ${env.NAMESPACE}
-                kubectl apply -f k8s/app-deployment.yaml -n ${env.NAMESPACE}
-                kubectl apply -f k8s/service.yaml -n ${env.NAMESPACE}
-
-                # Actualiza la imagen
-                kubectl set image deployment/mern-crud-app mern-crud-app=${env.DOCKER_IMAGE} -n ${env.NAMESPACE}
-                kubectl rollout status deployment/mern-crud-app -n ${env.NAMESPACE} --timeout=300s
-            """
-            }
-        }
-    }
-    
-
     post {
         always {
-            echo "Pipeline finalizado - Imagen: ${env.DOCKER_IMAGE}"
-            sh "${env.DOCKER_CMD} system prune -f || true"  // Limpieza
+            echo "Pipeline execution completed with status: ${currentBuild.currentResult}"
+            sh "${env.DOCKER_CMD} system prune -f || true"
         }
     }
 }
