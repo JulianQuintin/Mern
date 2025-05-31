@@ -1,5 +1,5 @@
 # Etapa 1: Construir el cliente (React)
-FROM node:16-alpine as client-builder
+FROM node:18-alpine as client-builder
 
 WORKDIR /app/client
 COPY client/package.json client/package-lock.json ./
@@ -8,7 +8,7 @@ COPY client .
 RUN npm run build
 
 # Etapa 2: Construir el servidor (Node.js)
-FROM node:16-alpine as server-builder
+FROM node:18-alpine as server-builder
 
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -16,7 +16,7 @@ RUN npm install
 COPY . .
 
 # Etapa 3: Imagen de producción final
-FROM node:16-alpine
+FROM node:18-alpine
 
 WORKDIR /app
 
