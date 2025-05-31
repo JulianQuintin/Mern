@@ -61,7 +61,7 @@ pipeline {
                         ${env.KUBECTL_CMD} set image deployment/mern-crud-app mern-crud-app=${env.DOCKER_IMAGE} -n ${env.NAMESPACE}
                         
                         # Verify rollout
-                        ${env.KUBECTL_CMD} rollout status deployment/mern-crud-app -n ${env.NAMESPACE} --timeout=300s
+                        ${env.KUBECTL_CMD} rollout status deployment/mern-crud-app -n ${env.NAMESPACE} --timeout=900s
                     """
                 }
             }
