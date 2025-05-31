@@ -3,6 +3,7 @@ pipeline {
 
     environment {
         DOCKER_CMD = '/usr/local/bin/docker'
+        KUBECTL_CMD = '/usr/local/bin/kubectl'  // Ruta absoluta de kubectl
         DOCKER_IMAGE = "julianquintin/mern-mysql-crud-master:${env.BUILD_NUMBER}"
         KUBECONFIG = "${env.HOME}/.kube/config"
         NAMESPACE = "mern-namespace"
@@ -37,10 +38,10 @@ pipeline {
                 script {
                     sh """
                         # Create namespace if doesn't exist
-                        kubectl get ns ${env.NAMESPACE} || kubectl create ns ${env.NAMESPACE}
+                        ${env.KUBECTL_CMD} get ns ${env.NAMESPACE} || ${env.KUBECTL_CMD} create ns ${env.NAMESPACE}
                         
                         # Verify cluster access
-                        kubectl cluster-info
+                        ${env.KUBECTL_CMD} cluster-info
                     """
                 }
             }
@@ -51,16 +52,16 @@ pipeline {
                 script {
                     sh """
                         # Apply Kubernetes manifests
-                        kubectl apply -f k8s/namespace.yaml
-                        kubectl apply -f k8s/mysql-deployment.yaml -n ${env.NAMESPACE}
-                        kubectl apply -f k8s/app-deployment.yaml -n ${env.NAMESPACE}
-                        kubectl apply -f k8s/service.yaml -n ${env.NAMESPACE}
+                        ${env.KUBECTL_CMD} apply -f k8s/namespace.yaml
+                        ${env.KUBECTL_CMD} apply -f k8s/mysql-deployment.yaml -n ${env.NAMESPACE}
+                        ${env.KUBECTL_CMD} apply -f k8s/app-deployment.yaml -n ${env.NAMESPACE}
+                        ${env.KUBECTL_CMD} apply -f k8s/service.yaml -n ${env.NAMESPACE}
                         
                         # Update image
-                        kubectl set image deployment/mern-crud-app mern-crud-app=${env.DOCKER_IMAGE} -n ${env.NAMESPACE}
+                        ${env.KUBECTL_CMD} set image deployment/mern-crud-app mern-crud-app=${env.DOCKER_IMAGE} -n ${env.NAMESPACE}
                         
                         # Verify rollout
-                        kubectl rollout status deployment/mern-crud-app -n ${env.NAMESPACE} --timeout=300s
+                        ${env.KUBECTL_CMD} rollout status deployment/mern-crud-app -n ${env.NAMESPACE} --timeout=300s
                     """
                 }
             }
