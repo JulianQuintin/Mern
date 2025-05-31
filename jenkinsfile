@@ -5,7 +5,7 @@ pipeline {
         DOCKER_CMD = '/usr/local/bin/docker'
         KUBECTL_CMD = '/usr/local/bin/kubectl'  // Ruta absoluta de kubectl
         DOCKER_IMAGE = "julianquintin/mern-mysql-crud-master:${env.BUILD_NUMBER}"
-        KUBECONFIG = "${env.HOME}/.kube/config"
+        KUBECONFIG = "/Users/julianpinilla/Desktop/minikube-config"
         NAMESPACE = "mern-namespace"
     }
 
