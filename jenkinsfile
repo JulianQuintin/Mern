@@ -1,44 +1,16 @@
 pipeline {
     agent any
-    
+
     environment {
-        DOCKER_CMD = '/usr/local/bin/docker'
-        DOCKER_BUILDKIT = '0'
+        DOCKER_CMD = '/usr/local/bin/docker'  // Ruta absoluta a Docker
+        DOCKER_IMAGE = "julianquintin/mern-mysql-crud-master:local-${env.BUILD_NUMBER}"
+        DOCKERFILE_PATH = 'dockerfile'  // Ruta relativa a tu Dockerfile
     }
 
     stages {
-        stage('Preparar Entorno') {
+        stage('Checkout Code') {
             steps {
-                script {
-                    // Configuración segura sin variables complejas en sh
-                    withCredentials([usernamePassword(
-                        credentialsId: 'dockerhub-creds',
-                        usernameVariable: 'DOCKER_USER',
-                        passwordVariable: 'DOCKER_PASS'
-                    )]) {
-                        // Usamos comillas simples para evitar problemas con $
-                        sh '''
-                            mkdir -p ~/.docker
-                            sudo ln -sf /Applications/Docker.app/Contents/Resources/bin/docker-credential-osxkeychain /usr/local/bin/ || true
-                            sudo chmod +x /usr/local/bin/docker-credential-osxkeychain || true
-                        '''
-                        // Configuración de credenciales con formato simplificado
-                        sh """
-                            echo '{
-                                "auths": {
-                                    "https://index.docker.io/v1/": {
-                                        "auth": "'$(echo -n "$DOCKER_USER:$DOCKER_PASS" | base64)'"
-                                    }
-                                }
-                            }' > ~/.docker/config.json
-                        """
-                    }
-                }
-            }
-        }
-
-        stage('Checkout Código') {
-            steps {
+                echo "Clonando repositorio..."
                 checkout([
                     $class: 'GitSCM',
                     branches: [[name: 'main']],
@@ -50,19 +22,24 @@ pipeline {
             }
         }
 
-        stage('Construir Imagen') {
+        stage('Build Docker Image') {
             steps {
                 script {
-                    withCredentials([usernamePassword(
-                        credentialsId: 'dockerhub-creds',
-                        usernameVariable: 'DOCKER_USER',
-                        passwordVariable: 'DOCKER_PASS'
-                    )]) {
-                        sh """
-                            ${env.DOCKER_CMD} login -u "$DOCKER_USER" -p "$DOCKER_PASS"
-                            ${env.DOCKER_CMD} build --no-cache -t julianquintin/mern-mysql-crud-master:${env.BUILD_NUMBER} -f dockerfile .
-                        """
-                    }
+                    echo "Construyendo imagen Docker..."
+                    sh """
+                        ${env.DOCKER_CMD} build \
+                            -t ${env.DOCKER_IMAGE} \
+                            -f ${env.DOCKERFILE_PATH} .
+                    """
+                }
+            }
+        }
+
+        stage('Verify Image') {
+            steps {
+                script {
+                    echo "Verificando imagen construida..."
+                    sh "${env.DOCKER_CMD} images | grep ${env.DOCKER_IMAGE.split(':')[0]}"
                 }
             }
         }
@@ -70,10 +47,8 @@ pipeline {
 
     post {
         always {
-            script {
-                sh "${env.DOCKER_CMD} system prune -f || true"
-                echo "Build ${currentBuild.currentResult} - ${env.BUILD_URL}"
-            }
+            echo "Pipeline finalizado - Imagen: ${env.DOCKER_IMAGE}"
+            sh "${env.DOCKER_CMD} system prune -f || true"  // Limpieza
         }
     }
 }
