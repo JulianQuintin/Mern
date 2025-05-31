@@ -4,37 +4,34 @@ pipeline {
     environment {
         DOCKER_CMD = '/usr/local/bin/docker'
         DOCKER_BUILDKIT = '0'
-        DOCKER_CONFIG = "${env.HOME}/.docker"
     }
 
     stages {
         stage('Preparar Entorno') {
             steps {
                 script {
-                    // Configuración segura de credenciales
-                    withCredentials([[
-                        $class: 'UsernamePasswordMultiBinding',
+                    // Configuración segura sin variables complejas en sh
+                    withCredentials([usernamePassword(
                         credentialsId: 'dockerhub-creds',
-                        usernameVariable: 'DOCKERHUB_USER',
-                        passwordVariable: 'DOCKERHUB_PASS'
-                    ]]) {
-                        // 1. Crear estructura de docker
-                        sh """
-                            mkdir -p "${env.DOCKER_CONFIG}"
-                            echo '{
-                                "auths": {
-                                    "https://index.docker.io/v1/": {
-                                        "auth": "'$(echo -n "$DOCKERHUB_USER:$DOCKERHUB_PASS" | base64)'"
-                                    }
-                                }
-                            }' > "${env.DOCKER_CONFIG}/config.json"
-                        """
-                        
-                        // 2. Configurar helper de credenciales
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )]) {
+                        // Usamos comillas simples para evitar problemas con $
                         sh '''
+                            mkdir -p ~/.docker
                             sudo ln -sf /Applications/Docker.app/Contents/Resources/bin/docker-credential-osxkeychain /usr/local/bin/ || true
                             sudo chmod +x /usr/local/bin/docker-credential-osxkeychain || true
                         '''
+                        // Configuración de credenciales con formato simplificado
+                        sh """
+                            echo '{
+                                "auths": {
+                                    "https://index.docker.io/v1/": {
+                                        "auth": "'$(echo -n "$DOCKER_USER:$DOCKER_PASS" | base64)'"
+                                    }
+                                }
+                            }' > ~/.docker/config.json
+                        """
                     }
                 }
             }
@@ -45,7 +42,6 @@ pipeline {
                 checkout([
                     $class: 'GitSCM',
                     branches: [[name: 'main']],
-                    extensions: [],
                     userRemoteConfigs: [[
                         url: 'https://github.com/JulianQuintin/Mern.git',
                         credentialsId: 'GitHubtoken2'
@@ -57,18 +53,14 @@ pipeline {
         stage('Construir Imagen') {
             steps {
                 script {
-                    withCredentials([[
-                        $class: 'UsernamePasswordMultiBinding',
+                    withCredentials([usernamePassword(
                         credentialsId: 'dockerhub-creds',
-                        usernameVariable: 'DOCKERHUB_USER',
-                        passwordVariable: 'DOCKERHUB_PASS'
-                    ]]) {
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )]) {
                         sh """
-                            ${env.DOCKER_CMD} login -u "$DOCKERHUB_USER" -p "$DOCKERHUB_PASS"
-                            ${env.DOCKER_CMD} build \\
-                                --no-cache \\
-                                -t julianquintin/mern-mysql-crud-master:${env.BUILD_NUMBER} \\
-                                -f dockerfile .
+                            ${env.DOCKER_CMD} login -u "$DOCKER_USER" -p "$DOCKER_PASS"
+                            ${env.DOCKER_CMD} build --no-cache -t julianquintin/mern-mysql-crud-master:${env.BUILD_NUMBER} -f dockerfile .
                         """
                     }
                 }
