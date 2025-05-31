@@ -1,39 +1,24 @@
 pipeline {
     agent any
-
-    environment {
-        // Configuración básica
-        DOCKER_CMD = 'docker'
-        KUBECTL_CMD = 'kubectl'
-        DOCKER_IMAGE = "julianquintin/mern-mysql-crud-master:${env.BUILD_NUMBER}"
-        MINIKUBE_PROFILE = "mern-cluster"
-        
-        // Configuración del entorno Minikube
-        MINIKUBE_ENV_FILE = "${WORKSPACE}/minikube-env"
+    
+    tools {
+        nodejs 'node18'
     }
-
+    
+    environment {
+        DOCKER_CMD = '/usr/local/bin/docker'
+        KUBECTL_CMD = '/usr/local/bin/kubectl'
+        DOCKER_HUB_CREDENTIALS_ID = 'jen-dockerhub'
+        DOCKER_IMAGE = "julianquintin/mern-mysql-crud-master:${env.BUILD_NUMBER}"
+        KUBECONFIG = "/Users/julianpinilla/Desktop/minikube-config"
+        NAMESPACE = "mern-crud-ns"
+    }
+    
+    options {
+        timeout(time: 10, unit: 'MINUTES')
+    }
+    
     stages {
-        stage('Configure Minikube Environment') {
-            steps {
-                script {
-                    // Configurar el entorno para usar Minikube
-                    sh """
-                        # Generar archivo de entorno Minikube
-                        minikube docker-env -p ${MINIKUBE_PROFILE} > ${MINIKUBE_ENV_FILE}
-                        
-                        # Cargar variables de entorno
-                        . ${MINIKUBE_ENV_FILE}
-                        
-                        # Configurar kubectl para usar el cluster de Minikube
-                        minikube update-context -p ${MINIKUBE_PROFILE}
-                        
-                        # Verificar conexión
-                        kubectl cluster-info
-                    """
-                }
-            }
-        }
-
         stage('Checkout Code') {
             steps {
                 checkout([
@@ -44,6 +29,22 @@ pipeline {
                         credentialsId: 'GitHubtoken2'
                     ]]
                 ])
+                sh 'ls -la'
+            }
+        }
+
+
+        stage('Prepare Kubernetes') {
+            steps {
+                script {
+                    sh """
+                    # Create namespace if doesn't exist
+                    ${env.KUBECTL_CMD} get ns ${env.NAMESPACE} || ${env.KUBECTL_CMD} create ns ${env.NAMESPACE}
+                    
+                    # Verify cluster access
+                    ${env.KUBECTL_CMD} cluster-info
+                    """
+                }
             }
         }
 
@@ -51,11 +52,21 @@ pipeline {
             steps {
                 script {
                     sh """
-                        # Construir imagen usando el Docker de Minikube
-                        docker build -t ${env.DOCKER_IMAGE} -f dockerfile .
+                        ${env.DOCKER_CMD} build -t ${env.DOCKER_IMAGE} -f dockerfile .
+                    """
+                }
+            }
+        }
+
+        stage('Prepare Kubernetes') {
+            steps {
+                script {
+                    sh """
+                        # Create namespace if doesn't exist
+                        ${env.KUBECTL_CMD} get ns ${env.NAMESPACE} || ${env.KUBECTL_CMD} create ns ${env.NAMESPACE}
                         
-                        # Verificar que la imagen se creó correctamente
-                        docker images | grep ${env.DOCKER_IMAGE}
+                        # Verify cluster access
+                        ${env.KUBECTL_CMD} cluster-info
                     """
                 }
             }
@@ -65,69 +76,45 @@ pipeline {
             steps {
                 script {
                     sh """
-                        # Crear namespace si no existe
-                        kubectl create namespace ${env.MINIKUBE_PROFILE} --dry-run=client -o yaml | kubectl apply -f -
+                        # Apply Kubernetes manifests
+                        ${env.KUBECTL_CMD} apply -f k8s/namespace.yaml
+                        ${env.KUBECTL_CMD} apply -f k8s/mysql-deployment.yaml -n ${env.NAMESPACE}
+                        ${env.KUBECTL_CMD} apply -f k8s/app-deployment.yaml -n ${env.NAMESPACE}
+                        ${env.KUBECTL_CMD} apply -f k8s/service.yaml -n ${env.NAMESPACE}
                         
-                        # Configurar política de imagen local
-                        kubectl patch deployment mern-crud-app -n ${env.MINIKUBE_PROFILE} \
-                            -p '{"spec":{"template":{"spec":{"containers":[{"name":"mern-crud-app","imagePullPolicy":"Never"}]}}}}' || true
+                        # Update image
+                        ${env.KUBECTL_CMD} set image deployment/mern-crud-app mern-crud-app=${env.DOCKER_IMAGE} -n ${env.NAMESPACE}
                         
-                        # Aplicar configuraciones
-                        kubectl apply -f k8s/namespace.yaml
-                        kubectl apply -f k8s/mysql-deployment.yaml -n ${env.MINIKUBE_PROFILE}
-                        kubectl apply -f k8s/app-deployment.yaml -n ${env.MINIKUBE_PROFILE}
-                        kubectl apply -f k8s/service.yaml -n ${env.MINIKUBE_PROFILE}
-                        
-                        # Actualizar imagen
-                        kubectl set image deployment/mern-crud-app mern-crud-app=${env.DOCKER_IMAGE} -n ${env.MINIKUBE_PROFILE}
-                        
-                        # Esperar despliegue con manejo robusto
-                        timeout 600 bash -c "
-                            while ! kubectl rollout status deployment/mern-crud-app -n ${env.MINIKUBE_PROFILE} --timeout=60s; do
-                                echo '=== Estado actual ===';
-                                kubectl get pods -n ${env.MINIKUBE_PROFILE} -o wide;
-                                echo '=== Logs de pods ===';
-                                kubectl logs -n ${env.MINIKUBE_PROFILE} -l app=mern-crud-app --all-containers=true --tail=50 || true;
-                                echo '=== Reintentando en 10 segundos ===';
-                                sleep 10;
-                            done
-                        "
+                        # Verify rollout
+                        ${env.KUBECTL_CMD} rollout status deployment/mern-crud-app -n ${env.NAMESPACE} --timeout=300s
                     """
                 }
             }
         }
     }
 
+
+        stage('Borra todo lo que haya') {
+            steps {
+                script {
+                    sh """
+                    ${env.KUBECTL_CMD} delete all --all -n ${env.NAMESPACE}
+                    """
+                }
+            }
+        }
+
+    
     post {
         always {
             echo "Pipeline execution completed with status: ${currentBuild.currentResult}"
-            sh """
-                # Limpiar entorno Docker
-                eval \$(minikube docker-env -u -p ${env.MINIKUBE_PROFILE}) || true
-                docker system prune -f || true
-                
-                # Opcional: Limpiar archivo de entorno
-                rm -f ${env.MINIKUBE_ENV_FILE} || true
-            """
+            sh "${env.DOCKER_CMD} system prune -f || true"
+        }
+        success {
+            echo 'Build&Deploy completado correctamente!'
         }
         failure {
-            script {
-                sh """
-                    echo '=== DIAGNÓSTICO DEL FALLO ==='
-                    echo "=== Versiones ==="
-                    minikube version -p ${env.MINIKUBE_PROFILE} || true
-                    kubectl version --client || true
-                    docker --version || true
-                    
-                    echo "=== Estado Minikube ==="
-                    minikube status -p ${env.MINIKUBE_PROFILE} || true
-                    
-                    echo "=== Recursos Kubernetes ==="
-                    kubectl get all -n ${env.MINIKUBE_PROFILE} || true
-                    kubectl describe deployment mern-crud-app -n ${env.MINIKUBE_PROFILE} || true
-                    kubectl get events -n ${env.MINIKUBE_PROFILE} --sort-by=.metadata.creationTimestamp || true
-                """
-            }
+            echo 'Build&Deploy failed. Check logs.'
         }
     }
 }
