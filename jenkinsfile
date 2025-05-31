@@ -44,6 +44,30 @@ pipeline {
             }
         }
     }
+    
+stage('Deploy to Kubernetes') {
+            steps {
+                script {
+                    echo "Desplegando en Kubernetes..."
+                    sh """
+                        # Aplicar configuraciones de Kubernetes
+                        kubectl apply -f k8s/namespace.yaml
+                        kubectl apply -f k8s/mysql-deployment.yaml -n ${env.NAMESPACE}
+                        kubectl apply -f k8s/app-deployment.yaml -n ${env.NAMESPACE}
+                        kubectl apply -f k8s/service.yaml -n ${env.NAMESPACE}
+
+                        # Actualizar imagen con la recién construida
+                        kubectl set image deployment/mern-app \
+                            mern-app=${env.DOCKER_IMAGE} -n ${env.NAMESPACE}
+
+                        # Verificar despliegue
+                        kubectl rollout status deployment/mern-app \
+                            -n ${env.NAMESPACE} --timeout=300s
+                    """
+                }
+            }
+        }
+    }
 
     post {
         always {
