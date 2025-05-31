@@ -33,6 +33,17 @@ pipeline {
             }
         }
 
+        stage('Install Kubectl') {
+            steps {
+                sh '''
+                curl -LO "https://dl.k8s.io/release/v1.30.1/bin/darwin/amd64/kubectl"
+                chmod +x kubectl
+                sudo mv kubectl /usr/local/bin/kubectl
+                kubectl version --client
+                '''
+            }
+        }
+
         stage('Prepare Kubernetes') {
             steps {
                 script {
@@ -47,16 +58,6 @@ pipeline {
             }
         }
 
-        stage('Install Kubectl') {
-            steps {
-                sh '''
-                curl -LO "https://dl.k8s.io/release/v1.30.1/bin/darwin/amd64/kubectl"
-                chmod +x kubectl
-                sudo mv kubectl /usr/local/bin/kubectl
-                kubectl version --client
-                '''
-            }
-        }
 
         stage('Deploy to Kubernetes') {
             steps {
