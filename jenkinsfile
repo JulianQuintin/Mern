@@ -44,8 +44,8 @@ pipeline {
             }
         }
     }
-    
-stage('Deploy to Kubernetes') {
+
+    stage('Deploy to Kubernetes') {
             steps {
                 script {
                     echo "Desplegando en Kubernetes..."
@@ -67,7 +67,7 @@ stage('Deploy to Kubernetes') {
                 }
             }
         }
-    }
+    
 
     post {
         always {
