@@ -1,32 +1,54 @@
 pipeline {
     agent any
-
+    
     environment {
-        // Configura las rutas absolutas para Docker
+        // Configuración de Docker
         DOCKER_CMD = '/usr/local/bin/docker'
-        DOCKER_COMPOSE_CMD = '/usr/local/bin/docker-compose'
-        DOCKER_IMAGE = 'mern'
-        DOCKER_TAG = "${env.BUILD_NUMBER}"
+        DOCKER_BUILDKIT = '0'  // Desactiva BuildKit para evitar problemas de credenciales
+        DOCKER_CONFIG = "${env.HOME}/.docker"
     }
 
     stages {
-        stage('Verify Docker') {
+        stage('Preparar Entorno') {
             steps {
                 script {
-                    // Verifica que Docker esté instalado y accesible
+                    // 1. Crear symlink para el helper de credenciales
                     sh """
-                        ${DOCKER_CMD} --version || echo "ERROR: Docker no está instalado o no es accesible"
-                        ${DOCKER_COMPOSE_CMD} --version || echo "ERROR: Docker Compose no está instalado"
+                        sudo ln -sf /Applications/Docker.app/Contents/Resources/bin/docker-credential-osxkeychain /usr/local/bin/
+                        sudo chmod +x /usr/local/bin/docker-credential-osxkeychain
                     """
+                    
+                    // 2. Configurar credenciales directas
+                    withCredentials([[
+                        $class: 'UsernamePasswordMultiBinding',
+                        credentialsId: 'dockerhub-creds',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    ]]) {
+                        sh """
+                            mkdir -p ${DOCKER_CONFIG}
+                            echo '{
+                                "auths": {
+                                    "https://index.docker.io/v1/": {
+                                        "auth": "$(echo -n ${DOCKER_USER}:${DOCKER_PASS} | base64)"
+                                    }
+                                }
+                            }' > ${DOCKER_CONFIG}/config.json
+                        """
+                    }
                 }
             }
         }
 
-        stage('Checkout Code') {
+        stage('Checkout Código') {
             steps {
                 checkout([
                     $class: 'GitSCM',
                     branches: [[name: 'main']],
+                    extensions: [
+                        [$class: 'CleanBeforeCheckout'],
+                        [$class: 'CloneOption', depth: 1, shallow: true]
+                    ],
                     userRemoteConfigs: [[
                         url: 'https://github.com/JulianQuintin/Mern.git',
                         credentialsId: 'GitHubtoken2'
@@ -35,22 +57,25 @@ pipeline {
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Construir Imagen Docker') {
             steps {
                 script {
-                    sh "${DOCKER_CMD} build -t ${DOCKER_IMAGE}:${DOCKER_TAG} -f dockerfile ."
+                    // 3. Construcción con autenticación
+                    sh """
+                        ${DOCKER_CMD} login -u ${env.DOCKER_USER} -p ${env.DOCKER_PASS}
+                        ${DOCKER_CMD} build \\
+                            --no-cache \\
+                            -t julianquintin/mern-mysql-crud-master:${env.BUILD_NUMBER} \\
+                            -f dockerfile .
+                    """
                 }
             }
         }
 
-        stage('Run Tests') {
+        stage('Ejecutar Tests') {
             steps {
                 script {
-                    try {
-                        sh "${DOCKER_COMPOSE_CMD} -f docker-compose.test.yml up --build --abort-on-container-exit"
-                    } finally {
-                        sh "${DOCKER_COMPOSE_CMD} -f docker-compose.test.yml down -v"
-                    }
+                    sh "${DOCKER_CMD} compose -f docker-compose.test.yml up --build --abort-on-container-exit"
                 }
             }
         }
@@ -59,13 +84,18 @@ pipeline {
     post {
         always {
             script {
-                // Limpieza segura (ignora errores)
-                catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
-                    sh "${DOCKER_CMD} system prune -f"
-                }
+                // Limpieza
+                sh """
+                    ${DOCKER_CMD} compose -f docker-compose.test.yml down -v || true
+                    ${DOCKER_CMD} system prune -f || true
+                """
                 
-                // Notificación básica (sin Slack)
+                // Notificación básica
                 echo "Build ${currentBuild.currentResult} - ${env.BUILD_URL}"
+                
+                // Opcional: Notificación por Slack (requiere plugin)
+                // slackSend channel: '#canal', color: currentBuild.currentResult == 'SUCCESS' ? 'good' : 'danger', 
+                //     message: "Build ${currentBuild.currentResult}: ${env.JOB_NAME} #${env.BUILD_NUMBER}"
             }
         }
     }
