@@ -3,10 +3,12 @@ pipeline {
 
     environment {
         DOCKER_CMD = '/usr/local/bin/docker'
-        KUBECTL_CMD = '/usr/local/bin/kubectl'  // Ruta absoluta de kubectl
+        KUBECTL_CMD = '/usr/local/bin/kubectl'
         DOCKER_IMAGE = "julianquintin/mern-mysql-crud-master:${env.BUILD_NUMBER}"
         KUBECONFIG = "/Users/julianpinilla/Desktop/minikube-config"
         NAMESPACE = "mern-crud-ns"
+        // Variable para el entorno Docker de Minikube
+        MINIKUBE_DOCKER_ENV = "${WORKSPACE}/minikube-docker-env"
     }
 
     stages {
@@ -23,11 +25,33 @@ pipeline {
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Configure Minikube Environment') {
+            steps {
+                script {
+                    // Configurar el entorno Docker para Minikube
+                    sh """
+                        # Obtener variables de entorno de Docker de Minikube
+                        minikube docker-env > ${MINIKUBE_DOCKER_ENV}
+                        
+                        # Configurar el shell para usar Docker de Minikube
+                        eval \$(minikube docker-env)
+                        
+                        # Verificar que estamos usando el Docker correcto
+                        docker info | grep "Name: minikube"
+                    """
+                }
+            }
+        }
+
+        stage('Build Docker Image in Minikube') {
             steps {
                 script {
                     sh """
-                        ${env.DOCKER_CMD} build -t ${env.DOCKER_IMAGE} -f dockerfile .
+                        # Construir la imagen usando el Docker de Minikube
+                        docker build -t ${env.DOCKER_IMAGE} -f dockerfile .
+                        
+                        # Verificar que la imagen se creó en Minikube
+                        docker images | grep ${env.DOCKER_IMAGE}
                     """
                 }
             }
@@ -37,11 +61,14 @@ pipeline {
             steps {
                 script {
                     sh """
-                        # Create namespace if doesn't exist
+                        # Crear namespace si no existe
                         ${env.KUBECTL_CMD} get ns ${env.NAMESPACE} || ${env.KUBECTL_CMD} create ns ${env.NAMESPACE}
                         
-                        # Verify cluster access
+                        # Verificar acceso al cluster
                         ${env.KUBECTL_CMD} cluster-info
+                        
+                        # Configurar política de pull para usar imágenes locales
+                        ${env.KUBECTL_CMD} patch deployment mern-crud-app -n ${env.NAMESPACE} -p '{"spec":{"template":{"spec":{"containers":[{"name":"mern-crud-app","imagePullPolicy":"Never"}]}}}}' || true
                     """
                 }
             }
@@ -51,17 +78,23 @@ pipeline {
             steps {
                 script {
                     sh """
-                        # Apply Kubernetes manifests
+                        # Aplicar manifiestos Kubernetes
                         ${env.KUBECTL_CMD} apply -f k8s/namespace.yaml
                         ${env.KUBECTL_CMD} apply -f k8s/mysql-deployment.yaml -n ${env.NAMESPACE}
                         ${env.KUBECTL_CMD} apply -f k8s/app-deployment.yaml -n ${env.NAMESPACE}
                         ${env.KUBECTL_CMD} apply -f k8s/service.yaml -n ${env.NAMESPACE}
                         
-                        # Update image
+                        # Actualizar imagen (usará la local gracias a Never)
                         ${env.KUBECTL_CMD} set image deployment/mern-crud-app mern-crud-app=${env.DOCKER_IMAGE} -n ${env.NAMESPACE}
                         
-                        # Verify rollout
-                        ${env.KUBECTL_CMD} rollout status deployment/mern-crud-app -n ${env.NAMESPACE} --timeout=300s
+                        # Verificar despliegue con manejo de errores mejorado
+                        timeout 300 bash -c "
+                            while ! ${env.KUBECTL_CMD} rollout status deployment/mern-crud-app -n ${env.NAMESPACE} --timeout=30s; do
+                                echo 'Rollout en progreso...';
+                                ${env.KUBECTL_CMD} get pods -n ${env.NAMESPACE};
+                                sleep 10;
+                            done
+                        "
                     """
                 }
             }
@@ -71,7 +104,21 @@ pipeline {
     post {
         always {
             echo "Pipeline execution completed with status: ${currentBuild.currentResult}"
-            sh "${env.DOCKER_CMD} system prune -f || true"
+            // Limpiar el entorno Docker de Minikube
+            sh """
+                eval \$(minikube docker-env -u)
+                docker system prune -f || true
+            """
+        }
+        failure {
+            // Comandos de diagnóstico cuando falla
+            sh """
+                echo '=== DESPLIEGUE FALLIDO - INFORMACIÓN PARA DIAGNÓSTICO ==='
+                ${env.KUBECTL_CMD} get pods -n ${env.NAMESPACE} -o wide
+                ${env.KUBECTL_CMD} describe deployment mern-crud-app -n ${env.NAMESPACE}
+                ${env.KUBECTL_CMD} logs -l app=mern-crud-app -n ${env.NAMESPACE} --all-containers=true --tail=50
+                ${env.KUBECTL_CMD} get events -n ${env.NAMESPACE} --sort-by=.metadata.creationTimestamp
+            """
         }
     }
 }
