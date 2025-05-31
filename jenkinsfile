@@ -46,27 +46,24 @@ pipeline {
     }
 
     stage('Deploy to Kubernetes') {
-            steps {
-                script {
-                    echo "Desplegando en Kubernetes..."
-                    sh """
-                        # Aplicar configuraciones de Kubernetes
-                        kubectl apply -f k8s/namespace.yaml
-                        kubectl apply -f k8s/mysql-deployment.yaml -n ${env.NAMESPACE}
-                        kubectl apply -f k8s/app-deployment.yaml -n ${env.NAMESPACE}
-                        kubectl apply -f k8s/service.yaml -n ${env.NAMESPACE}
+    steps {
+        script {
+            sh """
+                # Crea el namespace si no existe
+                kubectl get namespace ${env.NAMESPACE} || kubectl create namespace ${env.NAMESPACE}
 
-                        # Actualizar imagen con la recién construida
-                        kubectl set image deployment/mern-crud-app \
-                            mern-crud-app=${env.DOCKER_IMAGE} -n ${env.NAMESPACE}
+                # Aplica los archivos YAML
+                kubectl apply -f k8s/mysql-deployment.yaml -n ${env.NAMESPACE}
+                kubectl apply -f k8s/app-deployment.yaml -n ${env.NAMESPACE}
+                kubectl apply -f k8s/service.yaml -n ${env.NAMESPACE}
 
-                        # Verificar despliegue
-                        kubectl rollout status deployment/mern-crud-app \
-                            -n ${env.NAMESPACE} --timeout=300s
-                    """
-                }
+                # Actualiza la imagen
+                kubectl set image deployment/mern-crud-app mern-crud-app=${env.DOCKER_IMAGE} -n ${env.NAMESPACE}
+                kubectl rollout status deployment/mern-crud-app -n ${env.NAMESPACE} --timeout=300s
+            """
             }
         }
+    }
     
 
     post {
