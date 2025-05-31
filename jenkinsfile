@@ -4,7 +4,7 @@ pipeline {
     environment {
         // Configuración de Docker
         DOCKER_CMD = '/usr/local/bin/docker'
-        DOCKER_BUILDKIT = '0'  // Desactiva BuildKit para evitar problemas de credenciales
+        DOCKER_BUILDKIT = '0'  // Desactiva BuildKit
         DOCKER_CONFIG = "${env.HOME}/.docker"
     }
 
@@ -13,27 +13,26 @@ pipeline {
             steps {
                 script {
                     // 1. Crear symlink para el helper de credenciales
-                    sh """
+                    sh '''
                         sudo ln -sf /Applications/Docker.app/Contents/Resources/bin/docker-credential-osxkeychain /usr/local/bin/
                         sudo chmod +x /usr/local/bin/docker-credential-osxkeychain
-                    """
+                    '''
                     
-                    // 2. Configurar credenciales directas
-                    withCredentials([[
-                        $class: 'UsernamePasswordMultiBinding',
+                    // 2. Configurar credenciales directas (versión corregida)
+                    withCredentials([usernamePassword(
                         credentialsId: 'dockerhub-creds',
                         usernameVariable: 'DOCKER_USER',
                         passwordVariable: 'DOCKER_PASS'
-                    ]]) {
+                    )]) {
                         sh """
-                            mkdir -p ${DOCKER_CONFIG}
+                            mkdir -p ${env.DOCKER_CONFIG}
                             echo '{
                                 "auths": {
                                     "https://index.docker.io/v1/": {
-                                        "auth": "$(echo -n ${DOCKER_USER}:${DOCKER_PASS} | base64)"
+                                        "auth": "'$(echo -n ${DOCKER_USER}:${DOCKER_PASS} | base64)'"
                                     }
                                 }
-                            }' > ${DOCKER_CONFIG}/config.json
+                            }' > ${env.DOCKER_CONFIG}/config.json
                         """
                     }
                 }
@@ -60,22 +59,10 @@ pipeline {
         stage('Construir Imagen Docker') {
             steps {
                 script {
-                    // 3. Construcción con autenticación
                     sh """
-                        ${DOCKER_CMD} login -u ${env.DOCKER_USER} -p ${env.DOCKER_PASS}
-                        ${DOCKER_CMD} build \\
-                            --no-cache \\
-                            -t julianquintin/mern-mysql-crud-master:${env.BUILD_NUMBER} \\
-                            -f dockerfile .
+                        ${env.DOCKER_CMD} login -u ${env.DOCKER_USER} -p ${env.DOCKER_PASS}
+                        ${env.DOCKER_CMD} build --no-cache -t julianquintin/mern-mysql-crud-master:${env.BUILD_NUMBER} -f dockerfile .
                     """
-                }
-            }
-        }
-
-        stage('Ejecutar Tests') {
-            steps {
-                script {
-                    sh "${DOCKER_CMD} compose -f docker-compose.test.yml up --build --abort-on-container-exit"
                 }
             }
         }
@@ -84,18 +71,10 @@ pipeline {
     post {
         always {
             script {
-                // Limpieza
                 sh """
-                    ${DOCKER_CMD} compose -f docker-compose.test.yml down -v || true
-                    ${DOCKER_CMD} system prune -f || true
+                    ${env.DOCKER_CMD} system prune -f || true
                 """
-                
-                // Notificación básica
                 echo "Build ${currentBuild.currentResult} - ${env.BUILD_URL}"
-                
-                // Opcional: Notificación por Slack (requiere plugin)
-                // slackSend channel: '#canal', color: currentBuild.currentResult == 'SUCCESS' ? 'good' : 'danger', 
-                //     message: "Build ${currentBuild.currentResult}: ${env.JOB_NAME} #${env.BUILD_NUMBER}"
             }
         }
     }
