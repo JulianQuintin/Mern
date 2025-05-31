@@ -4,7 +4,7 @@ pipeline {
     environment {
         DOCKER_CMD = '/usr/local/bin/docker'
         KUBECTL_CMD = '/usr/local/bin/kubectl'
-        DOCKER_IMAGE = "julianquintin/mern-mysql-crud-master:${env.BUILD_NUMBER}"
+        DOCKER_IMAGE = "julianquintin/mern-mysql-crud-master:\${env.BUILD_NUMBER}"
         MINIKUBE_PROFILE = "mern-cluster"
     }
 
@@ -12,12 +12,12 @@ pipeline {
         stage('Verify and Install Minikube') {
             steps {
                 script {
-                    sh """
+                    sh '''
                         # Verificar si Minikube está instalado
                         if ! command -v minikube >/dev/null 2>&1; then
                             echo "Instalando Minikube..."
                             # Para Mac
-                            if [ "$(uname)" == "Darwin" ]; then
+                            if [ "$(uname)" = "Darwin" ]; then
                                 brew install minikube
                             # Para Linux
                             else
@@ -29,7 +29,7 @@ pipeline {
 
                         # Verificar instalación
                         minikube version || { echo "Minikube installation failed"; exit 1; }
-                    """
+                    '''
                 }
             }
         }
@@ -37,19 +37,19 @@ pipeline {
         stage('Start Minikube Cluster') {
             steps {
                 script {
-                    sh """
+                    sh '''
                         # Iniciar Minikube si no está corriendo
                         if ! minikube status -p ${MINIKUBE_PROFILE} >/dev/null 2>&1; then
-                            minikube start -p ${MINIKUBE_PROFILE} --driver=docker \
-                                --cpus=4 --memory=8192 --disk-size=20g \
-                                --force-systemd=true \
+                            minikube start -p ${MINIKUBE_PROFILE} --driver=docker \\
+                                --cpus=4 --memory=8192 --disk-size=20g \\
+                                --force-systemd=true \\
                                 --embed-certs=true
                         fi
 
                         # Configurar entorno Docker
-                        eval \$(minikube docker-env -p ${MINIKUBE_PROFILE})
-                        export KUBECONFIG=\$(minikube kubectl config view -p ${MINIKUBE_PROFILE} --flatten)
-                    """
+                        eval $(minikube docker-env -p ${MINIKUBE_PROFILE})
+                        export KUBECONFIG=$(minikube kubectl config view -p ${MINIKUBE_PROFILE} --flatten)
+                    '''
                 }
             }
         }
@@ -72,10 +72,10 @@ pipeline {
                 script {
                     sh """
                         # Construir imagen dentro del entorno Minikube
-                        docker build -t ${env.DOCKER_IMAGE} -f dockerfile .
+                        ${env.DOCKER_CMD} build -t ${env.DOCKER_IMAGE} -f dockerfile .
                         
                         # Verificar que la imagen se creó
-                        docker images | grep ${env.DOCKER_IMAGE} || { echo "Image build failed"; exit 1; }
+                        ${env.DOCKER_CMD} images | grep ${env.DOCKER_IMAGE} || { echo 'Image build failed'; exit 1; }
                     """
                 }
             }
@@ -88,15 +88,15 @@ pipeline {
                         # Crear namespace si no existe
                         ${env.KUBECTL_CMD} create namespace ${env.MINIKUBE_PROFILE} --dry-run=client -o yaml | ${env.KUBECTL_CMD} apply -f -
 
-                        # Configurar política de imagen local
-                        ${env.KUBECTL_CMD} patch deployment mern-crud-app -n ${env.MINIKUBE_PROFILE} \
-                            -p '{"spec":{"template":{"spec":{"containers":[{"name":"mern-crud-app","imagePullPolicy":"Never"}]}}}}' || true
-
                         # Aplicar configuraciones
                         ${env.KUBECTL_CMD} apply -f k8s/namespace.yaml
                         ${env.KUBECTL_CMD} apply -f k8s/mysql-deployment.yaml -n ${env.MINIKUBE_PROFILE}
                         ${env.KUBECTL_CMD} apply -f k8s/app-deployment.yaml -n ${env.MINIKUBE_PROFILE}
                         ${env.KUBECTL_CMD} apply -f k8s/service.yaml -n ${env.MINIKUBE_PROFILE}
+                        
+                        # Configurar política de imagen local
+                        ${env.KUBECTL_CMD} patch deployment mern-crud-app -n ${env.MINIKUBE_PROFILE} \\
+                            -p '{"spec":{"template":{"spec":{"containers":[{"name":"mern-crud-app","imagePullPolicy":"Never"}]}}}}' || true
                         
                         # Actualizar imagen
                         ${env.KUBECTL_CMD} set image deployment/mern-crud-app mern-crud-app=${env.DOCKER_IMAGE} -n ${env.MINIKUBE_PROFILE}
@@ -123,8 +123,8 @@ pipeline {
             echo "Pipeline execution completed with status: ${currentBuild.currentResult}"
             sh """
                 # Limpiar entorno Docker
-                eval \$(minikube docker-env -u)
-                docker system prune -f || true
+                eval \$(${env.KUBECTL_CMD} minikube docker-env -u)
+                ${env.DOCKER_CMD} system prune -f || true
             """
         }
         failure {
@@ -134,7 +134,7 @@ pipeline {
                     echo "=== Versiones ==="
                     minikube version || true
                     ${env.KUBECTL_CMD} version --client || true
-                    docker --version || true
+                    ${env.DOCKER_CMD} --version || true
                     
                     echo "=== Estado Minikube ==="
                     minikube status -p ${env.MINIKUBE_PROFILE} || true
