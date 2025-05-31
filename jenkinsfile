@@ -9,21 +9,40 @@ pipeline {
     }
 
     stages {
+        stage('Verify Dependencies') {
+            steps {
+                script {
+                    // Verificar todas las dependencias primero
+                    def missingTools = []
+                    
+                    if (!sh(script: 'command -v minikube', returnStatus: true)) {
+                        missingTools << 'Minikube'
+                    }
+                    if (!sh(script: 'command -v docker', returnStatus: true)) {
+                        missingTools << 'Docker'
+                    }
+                    if (!sh(script: 'command -v kubectl', returnStatus: true)) {
+                        missingTools << 'kubectl'
+                    }
+                    
+                    if (missingTools) {
+                        error("ERROR: Herramientas faltantes: ${missingTools.join(', ')}. Instala antes de continuar.")
+                    }
+                }
+            }
+        }
+
         stage('Start Minikube Cluster') {
             steps {
                 script {
                     sh """
-                        # Verificar e iniciar Minikube
-                        if ! command -v minikube &> /dev/null; then
-                            echo "ERROR: Minikube no está instalado"
-                            exit 1
-                        fi
-
+                        # Iniciar Minikube si no está corriendo
                         if ! minikube status -p ${MINIKUBE_PROFILE} &> /dev/null; then
-                            minikube start -p ${MINIKUBE_PROFILE} --driver=docker \\
+                            minikube start -p ${MINIKUBE_PROFILE} --driver=docker \
                                 --cpus=4 --memory=8192 --disk-size=20g
                         fi
 
+                        # Configurar entorno
                         eval \$(minikube docker-env -p ${MINIKUBE_PROFILE})
                         export KUBECONFIG=\$(minikube kubectl config view -p ${MINIKUBE_PROFILE} --flatten)
                     """
@@ -31,99 +50,7 @@ pipeline {
             }
         }
 
-        stage('Checkout Code') {
-            steps {
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: 'main']],
-                    userRemoteConfigs: [[
-                        url: 'https://github.com/JulianQuintin/Mern.git',
-                        credentialsId: 'GitHubtoken2'
-                    ]]
-                ])
-            }
-        }
-
-        stage('Build Docker Image in Minikube') {
-            steps {
-                script {
-                    sh """
-                        docker build -t ${env.DOCKER_IMAGE} -f dockerfile .
-                        docker images | grep ${env.DOCKER_IMAGE}
-                    """
-                }
-            }
-        }
-
-        stage('Prepare Kubernetes Deployment') {
-            steps {
-                script {
-                    sh """
-                        # Crear namespace si no existe
-                        ${env.KUBECTL_CMD} create namespace ${env.MINIKUBE_PROFILE} --dry-run=client -o yaml | ${env.KUBECTL_CMD} apply -f -
-                        
-                        # Configurar política de imagen local
-                        ${env.KUBECTL_CMD} patch deployment mern-crud-app -n ${env.MINIKUBE_PROFILE} \\
-                            -p '{"spec":{"template":{"spec":{"containers":[{"name":"mern-crud-app","imagePullPolicy":"Never"}]}}}}' || true
-                    """
-                }
-            }
-        }
-
-        stage('Deploy to Kubernetes') {
-            steps {
-                script {
-                    sh """
-                        # Aplicar configuraciones
-                        ${env.KUBECTL_CMD} apply -f k8s/namespace.yaml
-                        ${env.KUBECTL_CMD} apply -f k8s/mysql-deployment.yaml -n ${env.MINIKUBE_PROFILE}
-                        ${env.KUBECTL_CMD} apply -f k8s/app-deployment.yaml -n ${env.MINIKUBE_PROFILE}
-                        ${env.KUBECTL_CMD} apply -f k8s/service.yaml -n ${env.MINIKUBE_PROFILE}
-                        
-                        # Actualizar imagen
-                        ${env.KUBECTL_CMD} set image deployment/mern-crud-app mern-crud-app=${env.DOCKER_IMAGE} -n ${env.MINIKUBE_PROFILE}
-                        
-                        # Esperar despliegue con manejo robusto
-                        timeout 600 bash -c "
-                            while ! ${env.KUBECTL_CMD} rollout status deployment/mern-crud-app -n ${env.MINIKUBE_PROFILE} --timeout=60s; do
-                                echo '=== Estado actual ===';
-                                ${env.KUBECTL_CMD} get pods -n ${env.MINIKUBE_PROFILE} -o wide;
-                                echo '=== Logs de pods ===';
-                                ${env.KUBECTL_CMD} logs -n ${env.MINIKUBE_PROFILE} -l app=mern-crud-app --all-containers=true --tail=50 || true;
-                                echo '=== Reintentando en 10 segundos ===';
-                                sleep 10;
-                            done
-                        "
-                    """
-                }
-            }
-        }
-    }
-
-    post {
-        always {
-            echo "Pipeline execution completed with status: ${currentBuild.currentResult}"
-            sh """
-                eval \$(minikube docker-env -u)
-                docker system prune -f || true
-            """
-        }
-        failure {
-            script {
-                if (sh(script: "minikube status -p ${env.MINIKUBE_PROFILE} &> /dev/null", returnStatus: true) == 0) {
-                    sh """
-                        echo '=== DIAGNÓSTICO DEL FALLO ==='
-                        minikube status -p ${env.MINIKUBE_PROFILE}
-                        ${env.KUBECTL_CMD} config current-context
-                        ${env.KUBECTL_CMD} cluster-info
-                        ${env.KUBECTL_CMD} get all -n ${env.MINIKUBE_PROFILE}
-                        ${env.KUBECTL_CMD} describe deployment mern-crud-app -n ${env.MINIKUBE_PROFILE}
-                        ${env.KUBECTL_CMD} get events -n ${env.MINIKUBE_PROFILE} --sort-by=.metadata.creationTimestamp
-                    """
-                } else {
-                    echo "Minikube no está disponible para diagnóstico"
-                }
-            }
-        }
+        // Resto de tus stages (Checkout, Build, Deploy)...
+        // Mantén el resto de tu pipeline igual que antes
     }
 }
